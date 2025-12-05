@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use hashbrown::HashMap;
+use hashbrown::hash_map::RawEntryMut;
+use rustc_hash::FxBuildHasher;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
@@ -12,7 +14,7 @@ struct StationStats {
 fn aggregate(filename: &str) -> String {
     let measurements = BufReader::new(File::open(filename).expect("Need 'measurements.txt' in the current directory."));
 
-    let mut stats = HashMap::<String, StationStats>::new();
+    let mut stats = HashMap::<String, StationStats, FxBuildHasher>::default();
     for line in measurements.lines() {
         let line = line.expect("Failed to read next line...");
 
@@ -22,17 +24,30 @@ fn aggregate(filename: &str) -> String {
         // Parse reading
         let reading = reading.parse::<f64>().expect("Not a floating point number");
 
-        // Update tracking
-        stats.entry(station.to_owned()).and_modify(|entry| {
-            if reading < entry.min {
-                entry.min = reading;
-            } else if reading > entry.max {
-                entry.max = reading;
+        // Update tracking - use raw_entry to avoid allocating String on lookup
+        match stats.raw_entry_mut().from_key(station) {
+            RawEntryMut::Occupied(mut entry) => {
+                let stats = entry.get_mut();
+                if reading < stats.min {
+                    stats.min = reading;
+                } else if reading > stats.max {
+                    stats.max = reading;
+                }
+                stats.total += reading;
+                stats.count += 1;
             }
-
-            entry.total += reading;
-            entry.count += 1;
-        }).or_insert(StationStats { min: reading, max: reading, total: reading, count: 1 });
+            RawEntryMut::Vacant(entry) => {
+                entry.insert(
+                    station.to_owned(),
+                    StationStats {
+                        min: reading,
+                        max: reading,
+                        total: reading,
+                        count: 1,
+                    },
+                );
+            }
+        }
     }
 
     let mut names: Vec<&String> = stats.keys().collect();
