@@ -11,3 +11,4 @@ debug = true
 [dependencies]
 rustc-hash = "2.0"
 hashbrown = "0.16"
+memmap2 = "0.9"

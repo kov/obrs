@@ -1,51 +1,58 @@
 use hashbrown::HashMap;
 use hashbrown::hash_map::RawEntryMut;
+use memmap2::Mmap;
 use rustc_hash::FxBuildHasher;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 
 struct StationStats {
     min: f64,
     max: f64,
     total: f64,
-    count: usize
+    count: usize,
 }
 
 fn aggregate(filename: &str) -> String {
-    let measurements = BufReader::new(File::open(filename).expect("Need 'measurements.txt' in the current directory."));
+    let file = File::open(filename).expect("Need 'measurements.txt' in the current directory.");
+    let mmap = unsafe { Mmap::map(&file).expect("Failed to mmap file") };
 
     let mut stats = HashMap::<String, StationStats, FxBuildHasher>::default();
-    for line in measurements.lines() {
-        let line = line.expect("Failed to read next line...");
 
-        // Parse line
-        let (station, reading) = line.split_once(';').expect("Bad line structure");
+    let mut start = 0;
+    for (i, &byte) in mmap.iter().enumerate() {
+        if byte == b'\n' {
+            let line_bytes = &mmap[start..i];
+            let line = std::str::from_utf8(line_bytes).expect("Invalid UTF-8");
+            start = i + 1;
 
-        // Parse reading
-        let reading = reading.parse::<f64>().expect("Not a floating point number");
+            // Parse line
+            let (station, reading) = line.split_once(';').expect("Bad line structure");
 
-        // Update tracking - use raw_entry to avoid allocating String on lookup
-        match stats.raw_entry_mut().from_key(station) {
-            RawEntryMut::Occupied(mut entry) => {
-                let stats = entry.get_mut();
-                if reading < stats.min {
-                    stats.min = reading;
-                } else if reading > stats.max {
-                    stats.max = reading;
+            // Parse reading
+            let reading = reading.parse::<f64>().expect("Not a floating point number");
+
+            // Update tracking - use raw_entry to avoid allocating String on lookup
+            match stats.raw_entry_mut().from_key(station) {
+                RawEntryMut::Occupied(mut entry) => {
+                    let stats = entry.get_mut();
+                    if reading < stats.min {
+                        stats.min = reading;
+                    } else if reading > stats.max {
+                        stats.max = reading;
+                    }
+                    stats.total += reading;
+                    stats.count += 1;
                 }
-                stats.total += reading;
-                stats.count += 1;
-            }
-            RawEntryMut::Vacant(entry) => {
-                entry.insert(
-                    station.to_owned(),
-                    StationStats {
-                        min: reading,
-                        max: reading,
-                        total: reading,
-                        count: 1,
-                    },
-                );
+                RawEntryMut::Vacant(entry) => {
+                    entry.insert(
+                        station.to_owned(),
+                        StationStats {
+                            min: reading,
+                            max: reading,
+                            total: reading,
+                            count: 1,
+                        },
+                    );
+                }
             }
         }
     }
@@ -58,7 +65,9 @@ fn aggregate(filename: &str) -> String {
         if count != 0 {
             output.push_str(", ");
         }
-        let station_stats = stats.get(station).expect("Station should exist in the hashmap");
+        let station_stats = stats
+            .get(station)
+            .expect("Station should exist in the hashmap");
         let mean = station_stats.total / station_stats.count as f64;
 
         // Apply IEEE 754 roundTowardPositive (ceiling) to 1 decimal place
@@ -74,11 +83,12 @@ fn aggregate(filename: &str) -> String {
 }
 
 fn main() {
-    let filename = std::env::args().nth(1).unwrap_or_else(|| "measurements.txt".to_string());
+    let filename = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "measurements.txt".to_string());
     let output = aggregate(&filename);
     println!("{}", output);
 }
-
 
 #[cfg(test)]
 mod test {
