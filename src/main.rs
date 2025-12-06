@@ -5,9 +5,9 @@ use rustc_hash::FxBuildHasher;
 use std::fs::File;
 
 struct StationStats {
-    min: f64,
-    max: f64,
-    total: f64,
+    min: i32,
+    max: i32,
+    total: i64,
     count: usize,
 }
 
@@ -21,14 +21,20 @@ fn aggregate(filename: &str) -> String {
     for (i, &byte) in mmap.iter().enumerate() {
         if byte == b'\n' {
             let line_bytes = &mmap[start..i];
-            let line = std::str::from_utf8(line_bytes).expect("Invalid UTF-8");
             start = i + 1;
 
-            // Parse line
-            let (station, reading) = line.split_once(';').expect("Bad line structure");
+            // Find semicolon position directly in bytes
+            let semicolon_pos = line_bytes
+                .iter()
+                .position(|&b| b == b';')
+                .expect("Bad line structure");
 
-            // Parse reading
-            let reading = reading.parse::<f64>().expect("Not a floating point number");
+            // Station name - skip UTF-8 validation with unchecked
+            let station = unsafe { std::str::from_utf8_unchecked(&line_bytes[..semicolon_pos]) };
+
+            // Parse as integer (12.3 becomes 123)
+            let reading_bytes = &line_bytes[semicolon_pos + 1..];
+            let reading = parse_int(reading_bytes);
 
             // Update tracking - use raw_entry to avoid allocating String on lookup
             match stats.raw_entry_mut().from_key(station) {
@@ -39,7 +45,7 @@ fn aggregate(filename: &str) -> String {
                     } else if reading > stats.max {
                         stats.max = reading;
                     }
-                    stats.total += reading;
+                    stats.total += reading as i64;
                     stats.count += 1;
                 }
                 RawEntryMut::Vacant(entry) => {
@@ -48,7 +54,7 @@ fn aggregate(filename: &str) -> String {
                         StationStats {
                             min: reading,
                             max: reading,
-                            total: reading,
+                            total: reading as i64,
                             count: 1,
                         },
                     );
@@ -57,6 +63,30 @@ fn aggregate(filename: &str) -> String {
         }
     }
 
+    format_output(stats)
+}
+
+// Fast integer parser - parses "12.3" as 123 (ignoring decimal point)
+#[inline]
+fn parse_int(bytes: &[u8]) -> i32 {
+    let mut result = 0i32;
+    let mut negative_toggle = 1;
+
+    for &byte in bytes {
+        match byte {
+            b'-' => negative_toggle = -1,
+            b'.' => continue, // Just skip the decimal point
+            b'0'..=b'9' => {
+                result = result * 10 + (byte - b'0') as i32;
+            }
+            _ => break,
+        }
+    }
+
+    result * negative_toggle
+}
+
+fn format_output(stats: HashMap<String, StationStats, FxBuildHasher>) -> String {
     let mut names: Vec<&String> = stats.keys().collect();
     names.sort();
 
@@ -68,12 +98,13 @@ fn aggregate(filename: &str) -> String {
         let station_stats = stats
             .get(station)
             .expect("Station should exist in the hashmap");
-        let mean = station_stats.total / station_stats.count as f64;
 
-        // Apply IEEE 754 roundTowardPositive (ceiling) to 1 decimal place
-        let min = (station_stats.min * 10.0).ceil() / 10.0;
-        let max = (station_stats.max * 10.0).ceil() / 10.0;
-        let mean = (mean * 10.0).ceil() / 10.0;
+        // Values are already multiplied by 10 (12.3 stored as 123)
+        // Apply IEEE 754 roundTowardPositive (ceiling)
+        let min = (station_stats.min as f64).ceil() / 10.0;
+        let max = (station_stats.max as f64).ceil() / 10.0;
+        let mean_times_10 = (station_stats.total as f64 / station_stats.count as f64).ceil();
+        let mean = mean_times_10 / 10.0;
 
         output.push_str(&format!("{station}={:.1}/{:.1}/{:.1}", min, mean, max));
     }
