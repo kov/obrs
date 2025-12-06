@@ -69,7 +69,7 @@ fn aggregate(filename: &str) -> String {
     let file = File::open(filename).expect("Need 'measurements.txt' in the current directory.");
     let mmap = unsafe { Mmap::map(&file).expect("Failed to mmap file") };
 
-    let num_threads = 8;
+    let num_threads = std::thread::available_parallelism().expect("Getting number of threads").into();
     let chunk_size = mmap.len() / num_threads;
 
     // Break the file into chunks and find the starting line for each of them.
