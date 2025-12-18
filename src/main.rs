@@ -1,8 +1,11 @@
+#![feature(portable_simd)]
 use hashbrown::HashMap;
 use hashbrown::hash_map::RawEntryMut;
 use memmap2::Mmap;
 use rustc_hash::FxBuildHasher;
 use std::fs::File;
+use std::simd::cmp::SimdPartialEq as _;
+use std::simd::u8x64;
 
 struct StationStats {
     min: i32,
@@ -17,10 +20,32 @@ fn do_aggregate(mmap: &[u8]) -> StationMap {
     let mut stats = StationMap::default();
 
     let mut start = 0;
-    for (i, &byte) in mmap.iter().enumerate() {
-        if byte == b'\n' {
-            let line_bytes = &mmap[start..i];
-            start = i + 1;
+    let simd_nl = u8x64::splat(b'\n');
+    for (n_chunks, chunk) in mmap.chunks(64).enumerate() {
+        // If we have the correct number of bytes, use simd to find the new line characters quickly.
+        // Otherwise, create a bitset that matches what the simd operation would create, so that we can
+        // reuse the same code.
+        let mut bits = if chunk.len() != 64 {
+            chunk
+                .iter()
+                .enumerate()
+                .fold(0u64, |bits, (i, &b)| if b == b'\n' {
+                    bits | 1 << i
+                } else {
+                    bits
+                })
+        } else {
+            simd_nl.simd_eq(u8x64::from_slice(chunk)).to_bitmask()
+        };
+
+        let offset = n_chunks * 64;
+        while bits != 0 {
+            // "Pop" the first 1 in the bitset
+            let pos = bits.trailing_zeros() as usize + offset;
+            bits &= bits - 1;
+
+            let line_bytes = &mmap[start..pos];
+            start = pos + 1;
 
             // Find semicolon position directly in bytes
             let semicolon_pos = line_bytes
