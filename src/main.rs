@@ -14,7 +14,7 @@ struct StationStats {
     count: usize,
 }
 
-type StationMap = HashMap::<String, StationStats, FxBuildHasher>;
+type StationMap = HashMap<String, StationStats, FxBuildHasher>;
 
 fn do_aggregate(mmap: &[u8]) -> StationMap {
     let mut stats = StationMap::default();
@@ -26,14 +26,10 @@ fn do_aggregate(mmap: &[u8]) -> StationMap {
         // Otherwise, create a bitset that matches what the simd operation would create, so that we can
         // reuse the same code.
         let mut bits = if chunk.len() != 64 {
-            chunk
-                .iter()
-                .enumerate()
-                .fold(0u64, |bits, (i, &b)| if b == b'\n' {
-                    bits | 1 << i
-                } else {
-                    bits
-                })
+            chunk.iter().enumerate().fold(
+                0u64,
+                |bits, (i, &b)| if b == b'\n' { bits | 1 << i } else { bits },
+            )
         } else {
             simd_nl.simd_eq(u8x64::from_slice(chunk)).to_bitmask()
         };
@@ -94,14 +90,19 @@ fn aggregate(filename: &str) -> String {
     let file = File::open(filename).expect("Need 'measurements.txt' in the current directory.");
     let mmap = unsafe { Mmap::map(&file).expect("Failed to mmap file") };
 
-    let num_threads = std::thread::available_parallelism().expect("Getting number of threads").into();
+    let num_threads = std::thread::available_parallelism()
+        .expect("Getting number of threads")
+        .into();
     let chunk_size = mmap.len() / num_threads;
 
     // Break the file into chunks and find the starting line for each of them.
     let mut chunk_offsets = vec![0];
     (1..num_threads).for_each(|thread_num| {
         let offset = thread_num * chunk_size;
-        let next_line = mmap[offset..].iter().position(|byte| *byte == b'\n').expect("Must find a newline");
+        let next_line = mmap[offset..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .expect("Must find a newline");
         chunk_offsets.push(offset + next_line + 1);
     });
     // Add the end as the last offset, so our sliding window catches the last chunk below.
@@ -133,12 +134,15 @@ fn aggregate(filename: &str) -> String {
         // Iterate over the other local maps merging into the first one
         for local_stats in rx {
             for (station, local_station_stats) in local_stats.into_iter() {
-                stats.entry(station).and_modify(|entry| {
-                    entry.min = entry.min.min(local_station_stats.min);
-                    entry.max = entry.max.max(local_station_stats.max);
-                    entry.total += local_station_stats.total;
-                    entry.count += local_station_stats.count;
-                }).or_insert(local_station_stats);
+                stats
+                    .entry(station)
+                    .and_modify(|entry| {
+                        entry.min = entry.min.min(local_station_stats.min);
+                        entry.max = entry.max.max(local_station_stats.max);
+                        entry.total += local_station_stats.total;
+                        entry.count += local_station_stats.count;
+                    })
+                    .or_insert(local_station_stats);
             }
         }
 
