@@ -43,10 +43,11 @@ fn do_aggregate(mmap: &[u8]) -> StationMap {
             let line_bytes = &mmap[start..pos];
             start = pos + 1;
 
-            // Find semicolon position directly in bytes
-            let semicolon_pos = line_bytes
+            // Find semicolon position directly in bytes, starting from 3 characters from the
+            // end. We know we will have at least 2 digits and a ..
+            let semicolon_pos = line_bytes[..line_bytes.len() - 3]
                 .iter()
-                .position(|&b| b == b';')
+                .rposition(|&b| b == b';')
                 .expect("Bad line structure");
 
             // Station name - skip UTF-8 validation with unchecked
